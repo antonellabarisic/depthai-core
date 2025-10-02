@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 
-# this is the github clean version. version before it was cleaned for github is saved to file stereo_astra_aligned_nn_with_comments.
-
-# combined from stereo_astra_aligned_nn.py (that is a result of aligning added to stereo_astra.py) and depth_nn_stereo_aligned.py!
-
 import cv2
 import depthai as dai
 import numpy as np
@@ -33,13 +29,11 @@ class FPSCounter:
 class CombinedDepthApp:
     def __init__(self):
         self.lowerRes = (640, 400)
-        # print focal length of camera currently in use
+        # get focal length of camera currently in use
         self.focal_px = get_focal_length(dai.CameraBoardSocket.CAM_B, resolution=self.lowerRes, verbose=True)
 
         self.pipeline = dai.Pipeline()
-        # set up nn pipeline
-        # device = 0 if torch.cuda.is_available() else -1
-        # self.nn_pipeline = pipeline(device=device)
+        # set up NN pipeline
         self.maxDisparity = 1 # isn't used
         self.colorMap = cv2.applyColorMap(np.arange(256, dtype=np.uint8), cv2.COLORMAP_JET)
         self.colorMap[0] = [0, 0, 0]  # to make zero-disparity pixels black
@@ -62,8 +56,8 @@ class CombinedDepthApp:
         self.depth_max = 4000 # 15000
 
         # === RGB / Monocular NN setup ===
-        self.nn_depth_min = 1.0 # 0.0 # doesn't work when set to self.depth_min_stereo
-        self.nn_depth_max = 4.0 # 15.0 # 10.0 # doesn't work when set to self.depth_max_stereo
+        self.nn_depth_min = 1.0 # 0.0 # doesn't work when set to self.depth_min
+        self.nn_depth_max = 4.0 # 15.0 # 10.0 # doesn't work when set to self.depth_max
         device = 0 if torch.cuda.is_available() else -1
         self.nn_depth_pipe = pipeline(
             task="depth-estimation",
@@ -130,8 +124,6 @@ class CombinedDepthApp:
         monoLeftOut.link(stereo.left)
         monoRightOut.link(stereo.right)
         # link alignment node
-        # rgbOut = rgbCam.requestFullResolutionOutput(type=dai.ImgFrame.Type.NV12) # is this the right type for RGB? didn't find explanation in https://docs.luxonis.com/software-v3/depthai/depthai-components/messages/img_frame
-        # above version (stereo_astra) results in error (?) so setting to the one from depth_alignment_v3
         rgbOut = rgbCam.requestOutput(size = (1280, 960), fps = FPS, enableUndistortion=True)
         rgbOut.link(sync.inputs["rgb"])
         # if platform == dai.Platform.RVC4:
@@ -150,7 +142,6 @@ class CombinedDepthApp:
         self.disparityQueue = stereo.disparity.createOutputQueue(blocking=False) # attempt to reduce load for better fps
         self.confidenceQueue = stereo.confidenceMap.createOutputQueue(blocking=False)
         self.depthQueue = stereo.depth.createOutputQueue()
-        # define alignment queue
         self.syncAlignedQueue = sync.out.createOutputQueue()
 
     # === Stereo visualization functions ===
@@ -178,11 +169,6 @@ class CombinedDepthApp:
         return colorizedConfidence
 
     def process_stereo_depth(self, npDepth):
-        # Visualization scaling based on depth range
-        # normDepth = np.clip((npDepth - self.depth_min) / max(1, (self.depth_max - self.depth_min)) * 255, 0, 255).astype(np.uint8)
-        # colorizedDepth = cv2.applyColorMap(normDepth, cv2.COLORMAP_HOT)
-        # return colorizedDepth
-        # checking if thresholdFilter will do the clipping on its own
         # return cv2.applyColorMap(npDepth.astype(np.uint8), cv2.COLORMAP_HOT) # not normalized
         normDepth = ((npDepth - npDepth.min()) / max(1, (npDepth.max() - npDepth.min())) * 255).astype(np.uint8)
         colorizedDepth = cv2.applyColorMap(normDepth, cv2.COLORMAP_HOT)
@@ -196,11 +182,6 @@ class CombinedDepthApp:
         with np.errstate(divide="ignore"):
             depth = (self.baseline_mm * self.focal_px) / disp
             depth = np.nan_to_num(depth, nan=0, posinf=0, neginf=0)
-        # temporary exploratory test: clip in this function
-        # Mask out values outside the valid range
-        mask = (depth >= self.depth_min) & (depth <= self.depth_max)
-        depth = np.where(mask, depth, 0)
-        # conclusion: no significant improvement in speed was noticed (but that is expected bc alignment doesn't take this into account). 
         return depth
     
     # === NN visualization functions ===
@@ -273,9 +254,6 @@ class CombinedDepthApp:
             self.pipeline.start()
 
             # Configure windows; trackbar adjusts blending ratio of rgb/depth
-            # Set the window to be resizable and the initial size
-            #cv2.namedWindow(alignedWindowName, cv2.WINDOW_NORMAL)
-            #cv2.resizeWindow(alignedWindowName, 1280, 720)
             cv2.createTrackbar(
                 "RGB Weight %",
                 alignedWindowName,
@@ -297,7 +275,6 @@ class CombinedDepthApp:
                 assert isinstance(disparity, dai.ImgFrame)
                 assert isinstance(confidence, dai.ImgFrame)
                 assert isinstance(depth, dai.ImgFrame)
-                # get same for aligned
                 alignedMessageGroup = self.syncAlignedQueue.get()
                 assert isinstance(alignedMessageGroup, dai.MessageGroup)
                 alignedRgb = alignedMessageGroup["rgb"]
@@ -330,11 +307,11 @@ class CombinedDepthApp:
                 if self.show_confidence:
                     cv2.imshow("confidence", colorizedConfidence)
 
-                # show the NN depth that was calculated earlier; TODO: rearrange the code so that everything is in a logical place...
+                # show the NN depth that was calculated earlier
                 if self.show_nn_depth:
                     # draw red dot (circle) on NN depth window
                     cv2.circle(colorized_nn, self.clickInfo["pt"], 5, (0, 0, 255), -1)
-                    cv2.imshow("nn_depth", colorized_nn)
+                    cv2.imshow("nn-depth", colorized_nn)
 
                 npDepth = depth.getFrame()
                 min_depth = np.min(npDepth)
@@ -345,7 +322,6 @@ class CombinedDepthApp:
                 if self.show_stereo_depth:
                     # Draw dot on depth window
                     if self.clickInfo["pt"] is not None:
-                        #cv2.circle(colorizedAlignedDepth, self.clickInfo["pt"], 5, (0, 0, 255), -1) # TODO: figure out why not do this here...
                         cv2.circle(colorizedDepth, self.clickInfo["pt"], 5, (0, 0, 255), -1)
                     cv2.imshow(stereoWindowName, colorizedDepth)
                 # Calculate and print real (stereo) depth from disparity
@@ -358,7 +334,7 @@ class CombinedDepthApp:
                     if alignedDepth is not None:
                         cvFrame = alignedRgb.getCvFrame() # how it's done in aligned code
                         npAlignedDepth = alignedDepth.getFrame() # how it's done in stereo_astra code
-                        colorizedAlignedDepth = self.process_stereo_depth(npAlignedDepth) # TODO: calculated twice...!
+                        colorizedAlignedDepth = self.process_stereo_depth(npAlignedDepth)
                         # colorizedAlignedDepth = self.add_legend(colorizedAlignedDepth, f"{self.depth_min}mm", f"{self.depth_max}mm", "Depth (mm)", cv2.COLORMAP_HOT)
                         blended = cv2.addWeighted(
                             cvFrame, self.rgbWeight, colorizedAlignedDepth, self.depthWeight, 0
@@ -375,7 +351,6 @@ class CombinedDepthApp:
                         # Draw red dot if a pixel was selected
                         if self.clickInfo["pt"] is not None:
                             cv2.circle(blended, self.clickInfo["pt"], 5, (0, 0, 255), -1)
-                            cv2.circle(colorizedDepth, self.clickInfo["pt"], 5, (0, 0, 255), -1)
                         cv2.imshow(alignedWindowName, blended)
 
                 key = cv2.waitKey(1)
